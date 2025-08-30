@@ -27,7 +27,7 @@ tradeAPI = Trade.TradeAPI(API_KEY, SECRET_KEY, PASSPHRASE, False, "1")
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # allow frontend from any origin
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -56,13 +56,9 @@ def get_best_prices(symbol="BTC-USDT"):
     return best_bid, best_ask
 
 # ----------------------------
-# TWAP Logic with WebSocket updates
+# TWAP Logic with WebSocket updates (Partial Fill + Balance Recalc)
 # ----------------------------
 async def run_twap_ws(ws: WebSocket, instId: str, percent: float, slices: int, interval: int):
-    balance = get_balance("USDT")
-    total_usdt = balance * (percent / 100)
-    slice_usdt = total_usdt / slices
-
     cancelled = False  # flag for cancel
 
     # Listen for cancel asynchronously
@@ -81,17 +77,21 @@ async def run_twap_ws(ws: WebSocket, instId: str, percent: float, slices: int, i
             except:
                 break
 
-    # Start listener task
     listener_task = asyncio.create_task(listen_cancel())
 
     await ws.send_text(json.dumps({
         "status": "start",
-        "message": f"TWAP started for {instId}: total {total_usdt:.4f} USDT in {slices} slices (~{slice_usdt:.4f} USDT per slice)"
+        "message": f"TWAP started for {instId}: {percent}% of balance in {slices} slices"
     }))
 
     for i in range(1, slices + 1):
         if cancelled:
             break
+
+        # Recalculate balance for each slice
+        balance = get_balance("USDT")
+        total_usdt = balance * (percent / 100)
+        slice_usdt = total_usdt / (slices - i + 1)  # divide remaining USDT among remaining slices
 
         best_bid, best_ask = get_best_prices(instId)
         price = (best_bid + best_ask) / 2
@@ -106,18 +106,23 @@ async def run_twap_ws(ws: WebSocket, instId: str, percent: float, slices: int, i
             sz=str(round(size, 6))
         )
 
-        await ws.send_text(json.dumps({
-            "status": "slice_executed",
-            "slice": i,
-            "total_slices": slices,
-            "price": round(price, 2),
-            "size": round(size, 6),
-            "order_response": order_resp
-        }))
+        # Partial fill simulation: report every 25% of slice
+        filled = 0.0
+        step = 0.25 * size
+        while filled < size and not cancelled:
+            filled += step
+            if filled > size:
+                filled = size
+            await ws.send_text(json.dumps({
+                "status": "partial_fill",
+                "slice": i,
+                "total_slices": slices,
+                "price": round(price, 2),
+                "size": round(filled, 6),
+                "order_response": order_resp
+            }))
+            await asyncio.sleep(interval / 4)
 
-        await asyncio.sleep(interval)
-
-    # Cancel listener task if still running
     if not listener_task.done():
         listener_task.cancel()
 
@@ -134,15 +139,6 @@ async def run_twap_ws(ws: WebSocket, instId: str, percent: float, slices: int, i
 # ----------------------------
 @app.websocket("/ws-twap")
 async def websocket_twap(ws: WebSocket):
-    """
-    Send parameters as JSON:
-    {
-        "instId": "BTC-USDT",
-        "percent": 10,
-        "slices": 5,
-        "interval": 30
-    }
-    """
     await ws.accept()
     try:
         data = await ws.receive_json()

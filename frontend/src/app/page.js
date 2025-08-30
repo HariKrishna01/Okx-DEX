@@ -6,7 +6,7 @@ export default function TwapPage() {
   const wsRef = useRef(null);
 
   const connectWebSocket = () => {
-    if (wsRef.current) return; // avoid multiple connections
+    if (wsRef.current) return;
 
     const ws = new WebSocket("ws://127.0.0.1:8000/ws-twap");
     wsRef.current = ws;
@@ -25,7 +25,6 @@ export default function TwapPage() {
       const msg = JSON.parse(event.data);
       setLogs(prev => [...prev, msg]);
 
-      // Reset wsRef if TWAP completed
       if (msg.status === "completed" || msg.status === "error") {
         wsRef.current = null;
       }
@@ -41,7 +40,6 @@ export default function TwapPage() {
 
   const cancelTwap = () => {
     if (wsRef.current) {
-      // send a cancel command to backend
       wsRef.current.send(JSON.stringify({ action: "cancel" }));
     }
   };
@@ -67,7 +65,9 @@ export default function TwapPage() {
       }}>
         {logs.map((log, i) => (
           <div key={i}>
-            {log.status} {log.slice ? `- Slice ${log.slice}/${log.total_slices}` : ""} {log.message || ""}
+            {log.status} {log.slice ? `- Slice ${log.slice}/${log.total_slices}` : ""}
+            {log.size ? ` - Filled: ${log.size}` : ""}
+            {log.message || ""}
           </div>
         ))}
       </div>
