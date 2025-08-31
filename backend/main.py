@@ -2,6 +2,7 @@ import os
 import json
 import requests
 import asyncio
+import random
 from dotenv import load_dotenv
 from okx import Account, Trade
 from fastapi import FastAPI, WebSocket
@@ -56,12 +57,17 @@ def get_best_prices(symbol="BTC-USDT"):
     return best_bid, best_ask
 
 # ----------------------------
-# TWAP Logic with WebSocket updates (Partial Fill + Balance Recalc)
+# Helper: Calculate slippage
+# ----------------------------
+def calculate_slippage(expected_price, executed_price):
+    return ((executed_price - expected_price) / expected_price) * 100
+
+# ----------------------------
+# TWAP Logic with WebSocket updates (Dynamic Slippage)
 # ----------------------------
 async def run_twap_ws(ws: WebSocket, instId: str, percent: float, slices: int, interval: int):
-    cancelled = False  # flag for cancel
+    cancelled = False
 
-    # Listen for cancel asynchronously
     async def listen_cancel():
         nonlocal cancelled
         while not cancelled:
@@ -88,15 +94,15 @@ async def run_twap_ws(ws: WebSocket, instId: str, percent: float, slices: int, i
         if cancelled:
             break
 
-        # Recalculate balance for each slice
         balance = get_balance("USDT")
         total_usdt = balance * (percent / 100)
-        slice_usdt = total_usdt / (slices - i + 1)  # divide remaining USDT among remaining slices
+        slice_usdt = total_usdt / (slices - i + 1)
 
         best_bid, best_ask = get_best_prices(instId)
         price = (best_bid + best_ask) / 2
         size = slice_usdt / price
 
+        # Place limit order (simulate execution)
         order_resp = tradeAPI.place_order(
             instId=instId,
             tdMode="cash",
@@ -106,21 +112,35 @@ async def run_twap_ws(ws: WebSocket, instId: str, percent: float, slices: int, i
             sz=str(round(size, 6))
         )
 
-        # Partial fill simulation: report every 25% of slice
+        await ws.send_text(json.dumps({
+            "status": "slice_info",
+            "slice": i,
+            "total_slices": slices,
+            "slice_size": round(size, 6),
+            "price": round(price, 2)
+        }))
+
         filled = 0.0
         step = 0.25 * size
         while filled < size and not cancelled:
             filled += step
             if filled > size:
                 filled = size
+
+            # Simulate executed price with random tiny slippage per partial fill
+            executed_price = price * (1 + random.uniform(-0.001, 0.001))  # ±0.1%
+            slippage = calculate_slippage(price, executed_price)
+
             await ws.send_text(json.dumps({
                 "status": "partial_fill",
                 "slice": i,
                 "total_slices": slices,
                 "price": round(price, 2),
                 "size": round(filled, 6),
-                "order_response": order_resp
+                "executed_price": round(executed_price, 2),
+                "slippage_percent": round(slippage, 4)
             }))
+
             await asyncio.sleep(interval / 4)
 
     if not listener_task.done():
@@ -152,7 +172,7 @@ async def websocket_twap(ws: WebSocket):
         await ws.close()
 
 # ----------------------------
-# Simple REST test endpoint
+# REST test endpoint
 # ----------------------------
 @app.get("/")
 def index():

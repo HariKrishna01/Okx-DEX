@@ -61,12 +61,15 @@ export default function TwapPage() {
         padding: "10px",
         height: "400px",
         overflowY: "scroll",
-        marginTop: "20px"
+        marginTop: "20px",
+        fontFamily: "monospace"
       }}>
         {logs.map((log, i) => (
           <div key={i}>
             {log.status} {log.slice ? `- Slice ${log.slice}/${log.total_slices}` : ""}
             {log.size ? ` - Filled: ${log.size}` : ""}
+            {log.executed_price ? ` - Executed: ${log.executed_price}` : ""}
+            {log.slippage_percent ? ` - Slippage: ${log.slippage_percent}%` : ""}
             {log.message || ""}
           </div>
         ))}
